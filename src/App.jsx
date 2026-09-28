@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import "./styles.css";
 
 const DEFAULTS = {
   asset: "SOL",
