@@ -4,17 +4,18 @@ import "./styles.css";
 const DEFAULTS = {
   asset: "SOL",
   quote: "USDC",
-  amount: 10,
-  entry: 0.00,
-  stopLoss: 0.00,
-  takeProfit: 0.00,
+  side: "long",
+  amount: 1000,
+  entry: 150,
+  stopLoss: 140,
+  takeProfit: 175,
   entryFeePercent: 0.1,
   exitFeePercent: 0.1,
 };
 
-function money(value, currency = "USDT") {
+function money(value, currency = "USDC") {
   if (!Number.isFinite(value)) return "—";
-  return `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString(undefined, {
+  return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} ${currency}`;
@@ -22,7 +23,7 @@ function money(value, currency = "USDT") {
 
 function percent(value) {
   if (!Number.isFinite(value)) return "—";
-  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+  return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}%`;
 }
 
 function price(value) {
@@ -33,13 +34,11 @@ function price(value) {
   })}`;
 }
 
-// Position size: 2 decimals for 1 or more, 4 significant digits for smaller amounts
 function qty(value) {
   if (!Number.isFinite(value)) return "—";
-  if (Math.abs(value) >= 1) {
-    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  }
-  return value.toLocaleString(undefined, { maximumSignificantDigits: 4 });
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: Math.abs(value) >= 1 ? 4 : 6,
+  });
 }
 
 function Metric({ label, value, tone = "neutral", subtext }) {
@@ -60,14 +59,13 @@ function ScenarioCard({ title, result, accent, currency }) {
           <span className="eyebrow">{title}</span>
           <h2>{result.label}</h2>
         </div>
-        <div className={`scenario-badge ${accent}`}>
+        <div className={`scenario-badge ${result.pnl >= 0 ? "profit" : "loss"}`}>
           {percent(result.roi)}
         </div>
       </div>
-
       <div className="scenario-main">
         <div>
-          <div className="scenario-caption">Net P&L after fees</div>
+          <div className="scenario-caption">Estimated net P&amp;L</div>
           <div className={`scenario-pnl ${result.pnl >= 0 ? "profit" : "loss"}`}>
             {money(result.pnl, currency)}
           </div>
@@ -77,7 +75,6 @@ function ScenarioCard({ title, result, accent, currency }) {
           <strong>{price(result.exitPrice)}</strong>
         </div>
       </div>
-
       <div className="metric-grid">
         <Metric label="Gross P&L" value={money(result.grossPnl, currency)} />
         <Metric label="Entry fee" value={money(result.entryFee, currency)} />
@@ -88,6 +85,26 @@ function ScenarioCard({ title, result, accent, currency }) {
   );
 }
 
+function NumberField({ label, value, onChange, unit, step = "any", min = "0" }) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <span className="input-with-addon">
+        <input
+          type="number"
+          inputMode="decimal"
+          min={min}
+          step={step}
+          value={value}
+          onChange={onChange}
+          aria-label={label}
+        />
+        <span className="input-unit">{unit}</span>
+      </span>
+    </label>
+  );
+}
+
 export default function App() {
   const [form, setForm] = useState(DEFAULTS);
 
@@ -95,7 +112,7 @@ export default function App() {
     const raw = event.target.value;
     setForm((current) => ({
       ...current,
-      [field]: field === "asset" || field === "quote" ? raw.toUpperCase() : raw === "" ? "" : Number(raw),
+      [field]: field === "asset" || field === "quote" ? raw : raw === "" ? "" : Number(raw),
     }));
   };
 
@@ -108,26 +125,27 @@ export default function App() {
     const takeProfit = Number(form.takeProfit);
     const entryFeePercent = Number(form.entryFeePercent);
     const exitFeePercent = Number(form.exitFeePercent);
+    const validBase =
+      Number.isFinite(amount) && amount > 0 &&
+      Number.isFinite(entry) && entry > 0 &&
+      Number.isFinite(stopLoss) && stopLoss > 0 &&
+      Number.isFinite(takeProfit) && takeProfit > 0 &&
+      Number.isFinite(entryFeePercent) && entryFeePercent >= 0 && entryFeePercent < 100 &&
+      Number.isFinite(exitFeePercent) && exitFeePercent >= 0 && exitFeePercent < 100;
 
-    const valid =
-      Number.isFinite(amount) &&
-      amount > 0 &&
-      Number.isFinite(entry) &&
-      entry > 0 &&
-      Number.isFinite(stopLoss) &&
-      stopLoss > 0 &&
-      Number.isFinite(takeProfit) &&
-      takeProfit > 0 &&
-      Number.isFinite(entryFeePercent) &&
-      entryFeePercent >= 0 &&
-      Number.isFinite(exitFeePercent) &&
-      exitFeePercent >= 0;
+    if (!validBase) return { valid: false, message: "Enter positive amounts and prices, and fees from 0% up to (but not including) 100%." };
 
-    if (!valid) {
-      return { valid: false };
+    const isLong = form.side === "long";
+    if ((isLong && (stopLoss >= entry || takeProfit <= entry)) ||
+        (!isLong && (stopLoss <= entry || takeProfit >= entry))) {
+      return {
+        valid: false,
+        message: isLong
+          ? "For a long trade, stop loss must be below entry and take profit must be above it."
+          : "For a short trade, stop loss must be above entry and take profit must be below it.",
+      };
     }
 
-    // Position size is based on the amount allocated before fees.
     const quantity = amount / entry;
     const entryFeeRate = entryFeePercent / 100;
     const exitFeeRate = exitFeePercent / 100;
@@ -135,37 +153,30 @@ export default function App() {
     const totalCapital = amount + entryFee;
 
     const scenario = (exitPrice, label) => {
-      const grossExitValue = quantity * exitPrice;
-      const exitFee = grossExitValue * exitFeeRate;
-      const grossPnl = grossExitValue - amount;
+      const exitValue = quantity * exitPrice;
+      const exitFee = exitValue * exitFeeRate;
+      const grossPnl = (isLong ? exitValue - amount : amount - exitValue);
       const totalFees = entryFee + exitFee;
       const pnl = grossPnl - totalFees;
-      const roi = (pnl / totalCapital) * 100;
-
       return {
         label,
         exitPrice,
-        grossExitValue,
         grossPnl,
         entryFee,
         exitFee,
         totalFees,
         pnl,
-        roi,
+        roi: (pnl / totalCapital) * 100,
       };
     };
 
-    const tp = scenario(takeProfit, "Take Profit");
-    const sl = scenario(stopLoss, "Stop Loss");
-
-    // Solve for an exit price where net P&L = 0:
-    // quantity * exit * (1 - exitFeeRate) = amount * (1 + entryFeeRate)
-    const breakEvenPrice =
-      (amount * (1 + entryFeeRate)) / (quantity * (1 - exitFeeRate));
-
+    const tp = scenario(takeProfit, "Take profit");
+    const sl = scenario(stopLoss, "Stop loss");
+    const breakEvenPrice = isLong
+      ? (amount * (1 + entryFeeRate)) / (quantity * (1 - exitFeeRate))
+      : (amount * (1 - entryFeeRate)) / (quantity * (1 + exitFeeRate));
     const risk = Math.abs(sl.pnl);
     const reward = Math.max(0, tp.pnl);
-    const riskReward = risk > 0 ? reward / risk : Infinity;
 
     return {
       valid: true,
@@ -177,7 +188,7 @@ export default function App() {
       breakEvenPrice,
       risk,
       reward,
-      riskReward,
+      riskReward: risk > 0 ? reward / risk : Infinity,
     };
   }, [form]);
 
@@ -185,239 +196,127 @@ export default function App() {
     <main className="page-shell">
       <div className="app-container">
         <header className="hero">
-          <div>
-            <div className="brand-mark">₿</div>
-            <div className="eyebrow">CRYPTO TRADING TOOL</div>
-            <h1>Profit Calculator</h1>
-            <p>
-              See your real profit or loss after entry and exit trading fees.
-            </p>
+          <div className="brand-lockup">
+            <div className="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 17.5 9 12l3.5 3.5L20 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M14.5 7H20v5.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </div>
+            <span className="brand-name">Trade tools <span> / </span> Position planner</span>
           </div>
-          <button className="reset-button" onClick={reset}>
-            Reset
-          </button>
+          <div className="hero-content">
+            <div>
+              <div className="eyebrow hero-eyebrow"><span className="live-dot" /> PLAN BEFORE YOU TRADE</div>
+              <h1>Know your numbers.<br /><span>Trade with a plan.</span></h1>
+              <p>Map out your entry, exit, and fees before you place a trade.</p>
+            </div>
+            <button className="reset-button" type="button" onClick={reset}>
+              <span aria-hidden="true">↺</span> Reset example
+            </button>
+          </div>
         </header>
 
-        <section className="panel">
+        <section className="panel setup-panel" aria-labelledby="setup-title">
           <div className="section-heading">
-            <div>
-              <span className="eyebrow">TRADE SETUP</span>
-              <h2>Enter your numbers</h2>
+            <div className="heading-title">
+              <span className="step-number">01</span>
+              <div>
+                <span className="eyebrow">YOUR SETUP</span>
+                <h2 id="setup-title">Build a trade scenario</h2>
+              </div>
             </div>
-            <span className="fee-note">Fees are applied on entry + exit</span>
+            <span className="fee-note">Calculations include entry + exit fees</span>
+          </div>
+
+          <div className="side-control" role="group" aria-label="Trade direction">
+            <span className="side-label">Direction</span>
+            <div className="side-options">
+              <button type="button" className={form.side === "long" ? "selected long" : ""} aria-pressed={form.side === "long"} onClick={() => setForm((current) => ({ ...current, side: "long" }))}>
+                <span aria-hidden="true">↗</span> Long
+              </button>
+              <button type="button" className={form.side === "short" ? "selected short" : ""} aria-pressed={form.side === "short"} onClick={() => setForm((current) => ({ ...current, side: "short" }))}>
+                <span aria-hidden="true">↘</span> Short
+              </button>
+            </div>
           </div>
 
           <div className="form-grid">
-            <label>
-              <span>Asset</span>
-              <div className="select-wrap">
-                <select
-                  value={form.asset}
-                  onChange={update("asset")}
-                  aria-label="Asset"
-                >
-                  <option value="BTC">BTC</option>
-                  <option value="SOL">SOL</option>
+            <label className="field">
+              <span className="field-label">Asset</span>
+              <span className="select-wrap">
+                <select value={form.asset} onChange={update("asset")} aria-label="Asset">
+                  <option value="BTC">Bitcoin (BTC)</option>
+                  <option value="SOL">Solana (SOL)</option>
                 </select>
                 <span className="select-chevron" aria-hidden="true">⌄</span>
-              </div>
+              </span>
             </label>
-
-            <label>
-              <span>Stablecoin</span>
-              <div className="select-wrap">
-                <select
-                  value={form.quote}
-                  onChange={update("quote")}
-                  aria-label="Stablecoin"
-                >
+            <label className="field">
+              <span className="field-label">Quote currency</span>
+              <span className="select-wrap">
+                <select value={form.quote} onChange={update("quote")} aria-label="Quote currency">
                   <option value="USDT">USDT</option>
                   <option value="USDC">USDC</option>
                 </select>
                 <span className="select-chevron" aria-hidden="true">⌄</span>
-              </div>
+              </span>
             </label>
-
-            <label>
-              <span>Initial amount</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.amount}
-                  onChange={update("amount")}
-                  min="0"
-                  step="0.01"
-                  type="number"
-                />
-                <span>{form.quote}</span>
-              </div>
-            </label>
-
-            <label>
-              <span>Entry price</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.entry}
-                  onChange={update("entry")}
-                  min="0"
-                  step="0.00000001"
-                  type="number"
-                />
-                <span>{form.quote}</span>
-              </div>
-            </label>
-
-            <label>
-              <span>Stop loss</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.stopLoss}
-                  onChange={update("stopLoss")}
-                  min="0"
-                  step="0.00000001"
-                  type="number"
-                />
-                <span>{form.quote}</span>
-              </div>
-            </label>
-
-            <label>
-              <span>Take profit</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.takeProfit}
-                  onChange={update("takeProfit")}
-                  min="0"
-                  step="0.00000001"
-                  type="number"
-                />
-                <span>{form.quote}</span>
-              </div>
-            </label>
-
-            <label>
-              <span>Entry fee</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.entryFeePercent}
-                  onChange={update("entryFeePercent")}
-                  min="0"
-                  step="0.001"
-                  type="number"
-                />
-                <span>%</span>
-              </div>
-            </label>
-
-            <label>
-              <span>Exit fee</span>
-              <div className="input-with-addon">
-                <input
-                  value={form.exitFeePercent}
-                  onChange={update("exitFeePercent")}
-                  min="0"
-                  step="0.001"
-                  type="number"
-                />
-                <span>%</span>
-              </div>
-            </label>
+            <NumberField label="Position amount" value={form.amount} onChange={update("amount")} unit={form.quote} step="0.01" />
+            <NumberField label="Entry price" value={form.entry} onChange={update("entry")} unit={form.quote} />
+            <NumberField label="Stop loss" value={form.stopLoss} onChange={update("stopLoss")} unit={form.quote} />
+            <NumberField label="Take profit" value={form.takeProfit} onChange={update("takeProfit")} unit={form.quote} />
+            <NumberField label="Entry fee" value={form.entryFeePercent} onChange={update("entryFeePercent")} unit="%" step="0.001" />
+            <NumberField label="Exit fee" value={form.exitFeePercent} onChange={update("exitFeePercent")} unit="%" step="0.001" />
           </div>
 
-          <div className="formula-strip">
-            <div>
-              <span>Position size</span>
-              <strong>
-                {calc.valid ? `${qty(calc.quantity)} ${form.asset || "units"}` : "—"}
-              </strong>
+          {calc.valid ? (
+            <div className="formula-strip">
+              <div><span className="strip-icon" aria-hidden="true">◈</span><span className="strip-copy"><span className="strip-label">Position size</span><strong>{qty(calc.quantity)} <small>{form.asset}</small></strong></span></div>
+              <div><span className="strip-icon fee-icon" aria-hidden="true">%</span><span className="strip-copy"><span className="strip-label">Entry fee</span><strong>{money(calc.entryFee, form.quote)}</strong></span></div>
+              <div><span className="strip-icon capital-icon" aria-hidden="true">↗</span><span className="strip-copy"><span className="strip-label">Capital + entry fee</span><strong>{money(calc.totalCapital, form.quote)}</strong></span></div>
             </div>
-            <div>
-              <span>Entry fee</span>
-              <strong>{calc.valid ? money(calc.entryFee, form.quote) : "—"}</strong>
-            </div>
-            <div>
-              <span>Total capital incl. entry fee</span>
-              <strong>{calc.valid ? money(calc.totalCapital, form.quote) : "—"}</strong>
-            </div>
-          </div>
+          ) : (
+            <div className="validation-message" role="status"><span aria-hidden="true">!</span>{calc.message}</div>
+          )}
         </section>
 
         {calc.valid ? (
           <>
+            <div className="scenario-section-heading">
+              <div><span className="eyebrow">02 / POSSIBLE OUTCOMES</span><h2>See both sides of the trade</h2></div>
+              <span className="scenario-note">Estimates · not live market prices</span>
+            </div>
             <div className="scenario-grid">
-              <ScenarioCard title="UPSIDE SCENARIO" result={calc.tp} accent="profit" currency={form.quote} />
-              <ScenarioCard title="DOWNSIDE SCENARIO" result={calc.sl} accent="loss" currency={form.quote} />
+              <ScenarioCard title="IF PRICE MOVES IN YOUR FAVOR" result={calc.tp} accent="profit" currency={form.quote} />
+              <ScenarioCard title="IF YOUR STOP IS HIT" result={calc.sl} accent="loss" currency={form.quote} />
             </div>
 
             <section className="panel summary-panel">
               <div className="section-heading">
-                <div>
-                  <span className="eyebrow">TRADE SUMMARY</span>
-                  <h2>What this trade looks like</h2>
+                <div className="heading-title">
+                  <span className="step-number">03</span>
+                  <div><span className="eyebrow">AT A GLANCE</span><h2>Trade summary</h2></div>
                 </div>
+                <span className="fee-note">Based on your price targets</span>
               </div>
-
               <div className="summary-grid">
-                <Metric
-                  label="Risk / Reward"
-                  value={
-                    Number.isFinite(calc.riskReward)
-                      ? `1 : ${calc.riskReward.toFixed(2)}`
-                      : "1 : ∞"
-                  }
-                  subtext="Based on net P&L after fees"
-                />
-                <Metric
-                  label="Break-even exit"
-                  value={price(calc.breakEvenPrice)}
-                  subtext="Price needed to cover both fees"
-                />
-                <Metric
-                  label="Max loss at SL"
-                  value={money(-calc.risk, form.quote)}
-                  tone="loss"
-                />
-                <Metric
-                  label="Profit at TP"
-                  value={money(calc.reward, form.quote)}
-                  tone="profit"
-                />
+                <Metric label="Risk / reward" value={Number.isFinite(calc.riskReward) ? `1 : ${calc.riskReward.toFixed(2)}` : "1 : ∞"} subtext="Net of estimated fees" />
+                <Metric label="Break-even price" value={price(calc.breakEvenPrice)} subtext="Covers entry + exit fees" />
+                <Metric label="Loss if stopped" value={money(-calc.risk, form.quote)} tone="loss" />
+                <Metric label="Gain at target" value={money(calc.reward, form.quote)} tone="profit" />
               </div>
             </section>
 
-            <section className="how-it-works">
-              <div className="eyebrow">FORMULA</div>
-              <h2>How the calculator works</h2>
-              <p>
-                Position size = Initial amount ÷ Entry price. Entry fee is
-                charged on the initial amount, and exit fee is charged on the
-                position's final value.
-              </p>
-              <p>
-                <strong>Net P&L = Exit value − Entry amount − Entry fee − Exit fee</strong>
-              </p>
-              <p className="disclaimer">
-                This assumes a straightforward spot-style trade with no
-                leverage, funding fees, slippage, spread, taxes, or withdrawal
-                fees. Your exchange may calculate fees using a slightly
-                different fee tier or execution model.
-              </p>
-            </section>
+            <details className="how-it-works">
+              <summary><span><span className="eyebrow">THE MATH</span><strong>How these estimates work</strong></span><span className="details-toggle" aria-hidden="true">+</span></summary>
+              <div className="details-content">
+                <p>Position size = position amount ÷ entry price. Fees are applied to the entry amount and estimated exit value.</p>
+                <p><strong>Net P&amp;L = directional price change − entry fee − exit fee.</strong> A long benefits from a rising price; a short benefits from a falling price.</p>
+                <p className="disclaimer">This is a planning estimate, not financial advice or a live price feed. It excludes leverage, borrowing or funding costs, spread, slippage, taxes, and withdrawal fees. Actual execution and exchange fee tiers may differ.</p>
+              </div>
+            </details>
           </>
-        ) : (
-          <section className="empty-state panel">
-            <div className="empty-icon">!</div>
-            <h2>Enter valid trade values</h2>
-            <p>
-              Initial amount and prices must be greater than zero, and the fee
-              cannot be negative.
-            </p>
-          </section>
-        )}
+        ) : null}
 
-        <footer>
-          <span>Crypto Trading Calculator</span>
-          <span>Spot-friendly · Fee-aware · No leverage required</span>
-        </footer>
+        <footer><span>Position planner <span className="footer-separator">·</span> Estimates only</span><span>Double-check your exchange's fees before trading.</span></footer>
       </div>
     </main>
   );
